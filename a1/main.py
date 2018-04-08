@@ -1,13 +1,164 @@
-from a1.cifar import *
 import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import OneHotEncoder
+import os
 
-np.random.seed(400)
-train_X, train_Y, train_y = load_batch('data_batch_1')
-validate_X, validate_Y, validate_y = load_batch('data_batch_2')
-test_X, test_Y, test_y = load_batch('data_batch_3')
-W,b = init_Wb()
+K = 10
+d = 3072
 
-def mini_batch_gd(X, Y, gd_param, W, b, validate_X=None, validate_Y=None):
+class CrossEntropyPerceptron(object):
+    def __init__(self, lambda_):
+        self.lambda_ = lambda_
+        self.init_Wb()
+
+    def update_data(self, X, Y):
+        self.X = X
+        self.Y = Y
+
+    def init_Wb(self):
+        self.W = np.random.normal(0, 0.01, (K,d))
+        self.b = np.random.normal(0, 0.01, (K,1))
+
+    def visualize_weight(self, title):
+        plt.figure(figsize=(7, 3))
+        ax = plt.subplot(3, 5, 3)
+        ax.set_axis_off()
+
+        plt.title(title)
+        for i in range(K):
+            im = self.W[i, ...].reshape(3, 32, 32);
+            ax = plt.subplot(3, 5, i + 6) # reserve first row for title
+            ax.set_axis_off()
+            min_ = np.min(im)
+            max_ = np.max(im)
+            s_im = (im - min_) / (max_ - min_)
+            s_im = np.transpose(s_im, [1,2,0,])
+            plt.imshow(s_im)
+
+        plt.show()
+
+    def compute_cost(self, X, Y):
+        W, b, _lambda = self.W, self.b, self.lambda_
+
+        D = X.shape[0]
+        self.update_data(X, Y)
+        p = self.evalulate_classifier()
+
+        # faster sum
+        prod = np.sum(Y * p.T, axis=1)
+        # prod_alt = np.einsum('ij, ij->i', Y, p.T)
+        loss = - np.log(prod)
+        summed = np.sum(loss)
+
+        # regularization term
+        reg = _lambda * np.sum(np.square(W))
+
+        ret = summed / D + reg
+        return ret
+
+    def compute_accuracy(self, X, y):
+        W, b, lambda_ = self.W, self.b, self.lambda_
+        D = X.shape[0]
+        self.X = X
+        p = self.evalulate_classifier()
+        winners = np.argmax(p, axis=0)[:, np.newaxis]  # 2D vector
+
+        diff = y - winners
+        percentage = 1 - np.count_nonzero(diff) / D
+        return percentage
+    def train(self, X, Y, etta, ):
+        self.update_data(X, Y)
+        self.evalulate_classifier()
+        grad_w, grad_b = self.compute_gradient()
+        self.W -= etta * grad_w
+        self.b -= etta * grad_b
+
+    def compute_gradient(self, ):
+        X, Y, W, b, lambda_, P = self.X, self.Y, self.W, self.b, self.lambda_, self.P
+        D = X.shape[0]
+
+        g = P.T - Y
+        delta_b = np.sum(g, axis=0)
+        delta_W = g.T.dot(X)
+
+        delta_b /= D
+        delta_W /= D
+
+        delta_W += 2 * lambda_ * W
+
+        return delta_W, delta_b[:, None]  # converting to 2 dim vector
+
+    def numerical_grad(self, h):
+        X, Y, W, b, lambda_, P = self.X, self.Y, self.W, self.b, self.lambda_, self.P
+        no = len(W);
+        d = len(X);
+
+        grad_W = np.zeros(W.shape);
+        grad_b = np.zeros(no);
+
+        c = self.compute_cost(X, Y, W, b, lambda_);
+        print('numerical start')
+        for i in range(len(b)):
+            b_try = np.copy(b);
+            b_try[i] = b_try[i] + h;
+            c2 = self.compute_cost(X, Y, W, b_try, lambda_);
+            grad_b[i] = (c2 - c) / h
+        print('numerical half way..')
+        for i in range(W.shape[0]):
+            for j in range(W.shape[1]):
+                W_try = np.copy(W);
+                W_try[i, j] = W_try[i, j] + h;
+                c2 = self.compute_cost(X, Y, W_try, b, lambda_)
+                grad_W[i, j] = (c2 - c) / h
+        print('numerical completed!')
+        return grad_W, grad_b
+
+    def evalulate_classifier(self):
+        X, Y, W, b, lambda_= self.X, self.Y, self.W, self.b, self.lambda_
+        s = W.dot(X.T) + b
+
+        # softmax
+        nom = np.exp(s)
+        denom = np.sum(nom, axis=0)
+        p = nom / denom
+        self.P = p
+        return p
+
+def plot_error(train_error, epoch, batch_size, eta, lambda_, validation_err=None):
+    plt.plot(train_error, label='train error')
+    plt.plot(validation_err, label='validate error')
+    plt.title('Error rate at epoch, batch size: %d, etta: %0.2f, lambda: %0.2f,' % (batch_size, eta, lambda_))
+    plt.legend()
+    plt.show()
+
+def load_batch(filename):
+    path = 'Datasets/cifar-10-batches-py'
+    file = os.path.join(path, filename)
+
+    batch = np.load(file, encoding='bytes')
+    data = np.array(batch[b'data'])
+    labels = np.array(batch[b'labels'])
+    labels = labels[:,np.newaxis]
+
+    le = OneHotEncoder(sparse=True)
+    one_k = le.fit_transform(labels)
+
+    #csr mat -> np array
+    one_k = one_k.toarray()
+
+    # X (normalize), Y and y
+    normalized_data = data/255.
+    return normalized_data, one_k, labels
+
+def visualize(X):
+
+    x = X[0]
+    x = x.reshape(3,32,32).transpose(1,2,0)*256
+    x = x.astype('uint8')
+    plt.imshow(x)
+    plt.show()
+
+def mini_batch_gd(X, Y, gd_param, validate_X=None, validate_Y=None):
 
     batch_size, eta, n_epochs, lambda_ = gd_param
     n_batches = int(X.shape[0]/batch_size)
@@ -31,49 +182,20 @@ def mini_batch_gd(X, Y, gd_param, W, b, validate_X=None, validate_Y=None):
             XEnt.train(X_batch,Y_batch,eta)
 
     plot_error(train_err, n_epochs, batch_size, eta,lambda_, validate_error)
-    return W, b
 
 def param_to_str(param):
     return 'BatchSize_%d  etta_%0.2f epoch_%d lambda_%0.2f  ' % param
 
-batch_param = (50, 0.01, 100, 0.01)
+
+np.random.seed(400)
+train_X, train_Y, train_y = load_batch('data_batch_1')
+validate_X, validate_Y, validate_y = load_batch('data_batch_2')
+test_X, test_Y, test_y = load_batch('data_batch_3')
+
+batch_param = (50, 0.01, 40, 0.01)
 lambda_ = batch_param[3]
 XEnt = CrossEntropyPerceptron(lambda_)
-W, b = mini_batch_gd(train_X, train_Y, batch_param, W, b, validate_X, validate_Y)
-#test_error = compute_accuracy(test_X, test_y, W, b)
+mini_batch_gd(train_X, train_Y, batch_param, validate_X, validate_Y)
 test_error = XEnt.compute_accuracy(test_X,test_y)
+XEnt.visualize_weight('Weights %s' % param_to_str(batch_param))
 print('Test accuracy %0.2f%%' % (test_error*100))
-
-#visualize_weight(W, 'Weights visualized for configuration %s' % param_to_str(batch_param))
-
-
-#c = compute_cost(train_x, train_y, W, b, 0)
-#acc = compute_accuracy(X, y, W, b)
-
-#
-#
-# train_x = train_X[0:100]
-# train_y = train_Y[0:100]
-# P = evalulate_classifier(train_x, W, b)
-# #
-# # visualize(train_x)
-# grad_w_loop, grad_b_loop = compute_gradient_loop(train_x, train_y, P, W, 0)
-# grad_w_num, grad_b_num = numerical_grad(train_x, train_y, W, b, 0.0, 1e-6)
-# grad_w, grad_b = compute_gradient(train_x, train_y, P, W, 0.0)
-# #
-# #
-# diff = grad_w_num - grad_w
-# dff2 = grad_b_num[...,None] - grad_b
-# #numerical_cost = compute_cost(X, Y, W, b, 0.1)
-# #
-# diffB = grad_w_num - grad_w_loop
-# diffB2 = grad_b_num - grad_b_loop
-#
-# print('grad_W diff: ',graddiff(grad_w, grad_w_num))
-# print('grad_b diff: ',graddiff(grad_b, grad_b_num))
-#
-
-# #
-# diffC = grad_w - grad_w_loop
-# diffC2 = grad_b - grad_b_loop
-print('hello world')
