@@ -25,6 +25,4 @@ def get_names():
 
     return names, num
 
-get_names();
-
 print(matfile)
