@@ -1,5 +1,7 @@
 import numpy as np
+from numpy import tensordot, maximum, sum
 from numpy.random import randn
+from typing import List
 from scipy.io import loadmat
 
 NAMES = 'ascii_names.txt'
@@ -19,28 +21,119 @@ k: width of filter, not related to
 '''
 
 class HyperParam:
-    def __init__(self, k=[5,5],n=[5,5], K = 18, fsize=1337):
-        self.k = k
-        self.n = n # default filter size
-        self.fsize = fsize
+    def __init__(self, k=[5,5],nf=[5,5], K = 18, fsize=1337):
+        self.k = k # filter width
+        self.nf = nf # number of filters
+        self.fsize = (N_LEN - k[-1] + 1) * nf[-1]
         self.K = K # output dimensions
         self.sigs = [0.01, 0.01, 0.01] #TODO He initialization?
+        self.eps = 0.01
 
 class ConvNet():
     def __init__(self, filter_size=2, hyperparam=HyperParam(), ):
 
         self.hp = hyperparam
         self.f = [None] * filter_size
+        self.nlen = [N_LEN]
+        self.filter_size = filter_size
         # initialize filters
-        n1 = self.hp.n[0]
+        n1 = self.hp.nf[0]
         d = D
         for i, ki in enumerate(self.hp.k):
-            ni = self.hp.n[i]
+            ni = self.hp.nf[i]
             sig = self.hp.sigs[i]
-            self.f[i] = randn(ni, ki, d) * sig
-            d = ni
+            self.f[i] = randn(d, ki, ni) * sig
+            self.nlen.append(self.nlen[i] - ki + 1)
 
-        self.w = randn(self.hp.K, self.hp.fsize) * self.hp.sigs[-1]
+            d = ni
+        fsize = self.hp.nf[-1] * self.nlen[-1]
+        self.w = randn(self.hp.K, fsize) * self.hp.sigs[-1]
+
+        self.mf=[]
+        self.dF = [0] * filter_size
+        self.dF2 = 0
+        self.dF1 = 0
+        self.dW = 0
+
+    def compute_batch(self, X_batch, Y_batch, MFs:List=None, W=None):
+        p = self.forward(X_batch)
+        dw, [df1, df2] = self.backward(Y_batch, p)
+        print('hello world')
+
+    def forward(self, x_input, params=None):
+        if params is not None:
+            weights, f1, f2 = params
+            filters = [f1, f2]
+            modify_self = False
+        else:
+            weights, filters = self.w, self.f
+            modify_self = True #
+
+        X = [x_input]
+        n_len = N_LEN
+        # Filters
+        for f in filters:
+            x = X[-1]
+            mf = self.make_mf_matrix(f, n_len)
+            s1 = mf.dot(x)
+            s2 = np.maximum(s1, 0)
+            n_len = int(mf.shape[0]/f.shape[2]) # (n_len-k+1) * nf / nf
+            X.append(s2)
+            if modify_self: self.mf.append(mf)
+
+        # softmax
+        s = weights.dot(X[-1])
+        nom = np.exp(s)
+        denom = np.sum(nom, axis=0)
+        p = nom / denom
+        if modify_self: self.x = X
+        return p
+
+    def backward(self, y, p):
+        G = -(y-p)
+        x = self.x[-1]
+        n = G.shape[1]
+
+        # Dense layer
+        dW = G.dot(x.T) / n
+
+        G_ = self.w.T.dot(G)
+        ind = x > 0
+        G_ = G_ * ind
+
+        # conv layers
+        i = len(self.dF)
+
+        for dF in reversed(self.dF):
+            i -= 1
+
+            x = self.x[i]
+            f = self.f[i]
+            d, k, nf = f.shape
+            mx = self.make_mx_matrix(x, d, k, nf)
+            v_vec = np.einsum('ik,ijk->j', G_, mx) / n
+            v = v_vec.reshape(f.shape)
+            if i == 0:
+                v = v_vec.reshape(f.shape, order='F')
+
+
+            self.dF[i] = dF + v
+            mf = self.mf[i]
+            G_ = mf.T.dot(G_)
+            G_ = G_ * (x > 0)
+
+        # # First conv layer:
+
+        #
+        # x0 = self.x[0]
+        # f1 = self.f[0]
+        # d1, k1, nf1 = f1.shape
+        # mx1 = self.make_mx_matrix(x0, d1, k1, nf1)
+        # #v = np.tensordot(gg_, mx2, axes=([0,1],[1,0]))
+        # v = np.einsum('ik,ijk->j', G__, mx1)
+        # v = v.reshape(f1.shape)
+        # self.dF1 = self.dF1 + v
+        return dW, self.dF
 
     def make_mf_matrix(self, F, nlen):
         dd, k, nf = F.shape
@@ -57,7 +150,7 @@ class ConvNet():
         return mf
 
     def make_mx_matrix(self, x_input, d, k, nf):
-        x_input_ = x_input.flatten()
+        x_input_ = x_input
         nlen = int(x_input_.shape[0] / d)
 
         vec_x_cols = d * k
@@ -65,19 +158,77 @@ class ConvNet():
         rows = x_rows * nf
         cols = vec_x_cols * nf
 
-        x_vecs = np.ndarray((x_rows, vec_x_cols))
+        batch_size = x_input.shape[1]
+
+        x_vecs = np.ndarray((x_rows, vec_x_cols, batch_size))
+
+        # stride x to list
         for i in range(x_rows):
             idx = i * d
             x_vecs[i, :] = x_input_[idx:idx + vec_x_cols]
 
-        mx = np.zeros((rows, cols))
+        mx = np.zeros((rows, cols, batch_size))
 
+        # add in into large matrix
         for i in range(rows):
             idx = (i % nf) * vec_x_cols
             r = int(i / nf)
-            mx[i, idx:idx + vec_x_cols] = x_vecs[r, :]
+            deleme = x_vecs[r, :]
+            mx[i, idx:idx + vec_x_cols] = deleme
 
-        return mx.astype('int')
+        return mx
 
-    def hey(self):
-        print('yo')
+    def compute_num_grads_center(self, X, Y, h=1e-5):
+        """
+        A somewhat slow method to numerically approximate the gradients using the central difference.
+        :param X: Data batch. d x n
+        :param Y: Labels batch. K x n
+        :param h: Step length, default to 1e-5. Should obviously be kept small.
+        :return: Approximate gradients
+        """
+        # df/dx ≈ (f(x + h) - f(x - h))/2h according to the central difference formula
+
+        params = [np.copy(self.w), np.copy(self.f[0]), np.copy(self.f[1])]
+        num_grads = []
+
+        for i, param in enumerate(params):
+
+            grad = np.zeros(param.shape)
+            it = np.nditer(param, flags=['multi_index'], op_flags=['readwrite'])
+            while not it.finished:
+                ix = it.multi_index
+                old_value = param[ix]
+                param[ix] = old_value + h
+                plus_cost = self.compute_loss(X, Y, params)
+                param[ix] = old_value - h
+                minus_cost = self.compute_loss(X, Y, params)
+                param[ix] = old_value  # Restore original value
+
+                grad[ix] = (plus_cost - minus_cost) / (2 * h)
+                it.iternext()  # go to next index
+
+            if i > 0 and param.shape[0] == param.shape[2]:
+                grad = grad.transpose(2, 1, 0)  # to make sure the 3D arrays come the same way as in backward function
+            num_grads.append(grad)
+
+        return num_grads
+
+    def compute_loss(self, X, Y, params):
+        p = self.forward(X, params)
+        batch_count = Y.shape[1]
+        # faster sum
+        prod = sum(Y * p, axis=0)
+        # prod_alt = np.einsum('ij, ij->i', Y, p.T)
+        loss = - np.log(prod)
+        summed = np.sum(loss)
+        loss_normalized = summed / batch_count
+        return loss_normalized
+
+
+    def check_grad(self, a, n, eps):
+        diff = np.abs(a - n) / np.maximum(eps, np.amax(np.abs(a) + np.abs(n)))
+        if np.amax(diff) < 1e-6:
+            return True
+        else:
+            return False
+

@@ -1,4 +1,6 @@
-def compute_num_grads_center(self, X, Y, h=1e-5):
+import numpy as np
+
+def compute_num_grads_center(X, Y, h=1e-5):
     """
     A somewhat slow method to numerically approximate the gradients using the central difference.
     :param X: Data batch. d x n

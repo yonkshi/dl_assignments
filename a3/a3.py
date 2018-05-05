@@ -6,25 +6,27 @@ NAMES = 'ascii_names.txt'
 D = 28 #Input dim
 N_LEN = 19
 matfile = loadmat('DebugInfo.mat')
-
+K = 18 # Output dim
 X = None
 
 
 
 def main():
-    names, num = get_names()
+    np.random.seed(100)
+    names, labels = get_names(1000)
     N = len(names)
     global X
     # X = np.zeros((N, N_LEN * D))
     # for i, name in enumerate(names):
     #     X[i,...] = encode(name)
     #
-    X = np.vstack(map(encode,names))
-    e = encode('hohoho')
-    d = decode(e)
-    print(d)
+    x_batch = np.vstack(map(encode,names)).T
+    y_batch = label_encode(labels)
+    c = ConvNet()
+    c.compute_batch(x_batch, y_batch)
 
-def get_names():
+
+def get_names(max=10000000):
     """
     Get the 'ascii_names.txt' file
     :return:
@@ -33,14 +35,23 @@ def get_names():
         content = f.readlines()
     names = []
     nums = []
-    for line in content:
+    for i, line in enumerate(content):
         splitted = line.rsplit(None,1)
         if len(splitted ) > 2:
             print('wtf')
         name, num = splitted
         names.append(name)
-        nums.append(num)
-    return names, num
+        nums.append(int(num)-1) # 0 index
+        if i >= max-1:
+            break
+    return names, nums
+
+def label_encode(l):
+    rows = len(l)
+    global K
+    encoded = np.zeros((rows,K))
+    encoded[np.arange(rows),l] = 1
+    return encoded.T
 
 def encode(name):
     # sanitize:
