@@ -13,7 +13,7 @@ X = None
 
 def main():
     np.random.seed(100)
-    names, labels = get_names(1000)
+    names, labels = get_names()
     N = len(names)
     global X
     # X = np.zeros((N, N_LEN * D))

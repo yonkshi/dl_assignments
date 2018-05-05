@@ -1,6 +1,8 @@
 import numpy as np
+from scipy.sparse import csr_matrix
 from numpy import tensordot, maximum, sum
 from numpy.random import randn
+from time import time
 from typing import List
 from scipy.io import loadmat
 
@@ -21,13 +23,15 @@ k: width of filter, not related to
 '''
 
 class HyperParam:
-    def __init__(self, k=[5,5],nf=[5,5], K = 18, fsize=1337):
+    def __init__(self, k=[5,3],nf=[20,20], K = 18, fsize=1337, batch_size = 100, learning_rate=0.1):
         self.k = k # filter width
         self.nf = nf # number of filters
         self.fsize = (N_LEN - k[-1] + 1) * nf[-1]
         self.K = K # output dimensions
         self.sigs = [0.01, 0.01, 0.01] #TODO He initialization?
+        self.batch_size = batch_size
         self.eps = 0.01
+        self.learning_rate = learning_rate
 
 class ConvNet():
     def __init__(self, filter_size=2, hyperparam=HyperParam(), ):
@@ -55,10 +59,33 @@ class ConvNet():
         self.dF1 = 0
         self.dW = 0
 
-    def compute_batch(self, X_batch, Y_batch, MFs:List=None, W=None):
-        p = self.forward(X_batch)
-        dw, [df1, df2] = self.backward(Y_batch, p)
+    def compute_batch(self, X, Y, W=None):
+        batchsize = self.hp.batch_size
+        data_size = X.shape[1]
+        print(self.compute_loss(X,Y))
+        t0 = time()
+        self.pre_process_mx(X)
+        print('preprocess_time', time() - t0)
+        t0 = time()
+        for start in np.arange(0, data_size, batchsize):
+            print(start)
+            end = start + batchsize
+            if end > data_size: end = data_size
+
+            x_batch = X[:, start:end]
+            y_batch = Y[:, start:end]
+            self.pre_mx1_batch = self.precomputed_mx1[:,:,start:end]
+
+
+            p = self.forward(x_batch)
+            dw, [df1, df2] = self.backward(y_batch, p)
+
+            self.w -= dw * self.hp.learning_rate
+            self.f[0] -= df1 * self.hp.learning_rate
+            self.f[1] -= df2 * self.hp.learning_rate
+        print('epoch time:', time()-t0)
         print('hello world')
+        print(self.compute_loss(X, Y))
 
     def forward(self, x_input, params=None):
         if params is not None:
@@ -110,30 +137,42 @@ class ConvNet():
             x = self.x[i]
             f = self.f[i]
             d, k, nf = f.shape
-            mx = self.make_mx_matrix(x, d, k, nf)
-            v_vec = np.einsum('ik,ijk->j', G_, mx) / n
+
+            # use precomputed value
+            if i == 0:
+                #mx = self.pre_mx1_batch
+                v_vec = self._branch0(G_, n)
+            else:
+
+                #mx = self.make_mx_matrix(x, d, k, nf)
+                v_vec = self._branch1(x,d,k,nf, G_, n)
+            #v_vec = np.einsum('ik,ijk->j', G_, mx) / n
+
             v = v_vec.reshape(f.shape)
+            # bug fix
             if i == 0:
                 v = v_vec.reshape(f.shape, order='F')
 
-
-            self.dF[i] = dF + v
+            self.dF[i] = v
             mf = self.mf[i]
             G_ = mf.T.dot(G_)
             G_ = G_ * (x > 0)
 
-        # # First conv layer:
-
-        #
-        # x0 = self.x[0]
-        # f1 = self.f[0]
-        # d1, k1, nf1 = f1.shape
-        # mx1 = self.make_mx_matrix(x0, d1, k1, nf1)
-        # #v = np.tensordot(gg_, mx2, axes=([0,1],[1,0]))
-        # v = np.einsum('ik,ijk->j', G__, mx1)
-        # v = v.reshape(f1.shape)
-        # self.dF1 = self.dF1 + v
         return dW, self.dF
+    def _branch0(self, G_, n):
+        mx = self.pre_mx1_batch
+        v_vec = np.einsum('ik,ijk->j', G_, mx) / n
+        return v_vec
+    def _branch1(self, x, d, k, nf, G_, n):
+        mx = self.make_mx_matrix(x, d, k, nf)
+        v_vec = np.einsum('ik,ijk->j', G_, mx) / n
+        return v_vec
+        pass
+    def pre_process_mx(self,X):
+        d, k, nf = self.f[0].shape
+        self.precomputed_mx1 = self.make_mx_matrix(X, d, k, nf)
+        for i in range()
+
 
     def make_mf_matrix(self, F, nlen):
         dd, k, nf = F.shape
@@ -178,6 +217,37 @@ class ConvNet():
 
         return mx
 
+    def make_mx_matrix_sparse(self, x_input, d, k, nf):
+        x_input_ = x_input
+        nlen = int(x_input_.shape[0] / d)
+
+        vec_x_cols = d * k
+        x_rows = (nlen - k + 1)
+        rows = x_rows * nf
+        cols = vec_x_cols * nf
+
+        batch_size = x_input.shape[1]
+
+        x_vecs = np.ndarray((x_rows, vec_x_cols, batch_size))
+
+        # stride x to list
+        for i in range(x_rows):
+            idx = i * d
+            x_vecs[i, :] = x_input_[idx:idx + vec_x_cols]
+
+        mx = np.zeros((rows, cols, batch_size))
+
+        # add in into large matrix
+        for i in range(rows):
+            idx = (i % nf) * vec_x_cols
+            r = int(i / nf)
+            deleme = x_vecs[r, :]
+            mx[i, idx:idx + vec_x_cols] = deleme
+
+
+
+        return mx
+
     def compute_num_grads_center(self, X, Y, h=1e-5):
         """
         A somewhat slow method to numerically approximate the gradients using the central difference.
@@ -213,8 +283,8 @@ class ConvNet():
 
         return num_grads
 
-    def compute_loss(self, X, Y, params):
-        p = self.forward(X, params)
+    def compute_loss(self, X, Y, params=None):
+        p = self.forward(X, params=params)
         batch_count = Y.shape[1]
         # faster sum
         prod = sum(Y * p, axis=0)
@@ -223,7 +293,6 @@ class ConvNet():
         summed = np.sum(loss)
         loss_normalized = summed / batch_count
         return loss_normalized
-
 
     def check_grad(self, a, n, eps):
         diff = np.abs(a - n) / np.maximum(eps, np.amax(np.abs(a) + np.abs(n)))
