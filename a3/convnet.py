@@ -75,7 +75,7 @@ class ConvNet():
         print(self.compute_loss(X,Y))
         t0 = time()
         print('begin preprocessing ...')
-        self.pre_process_mx(X, batchsize)
+        self.preprocess_mx_superefficient(X, batchsize)
         print('preprocess time', time() - t0)
         t0 = time()
         for start in np.arange(0, data_size, batchsize):
@@ -85,7 +85,7 @@ class ConvNet():
             x_batch = X[:, start:end]
             y_batch = Y[:, start:end]
             i = int(start / batchsize)
-            self.pre_mx1_batch = self.precomputed_mx1[i]
+            self.mx1_batch = self.precomputed_mx1_full[i]
 
             p = self.forward(x_batch)
             dw, df = self.backward(y_batch, p)
@@ -175,11 +175,11 @@ class ConvNet():
         return dW, self.dF
 
     def _branch0(self, G_, n):
-        cols = self.pre_mx1_batch
         v_vec = np.zeros(self.hp.precomputed_v1_dimension)
-        for col_ix, gix in cols:
+        for col_ix, gix in self.mx1_batch.items():
             to_be_summed = G_.take(gix)
             v_vec[col_ix] = np.sum(to_be_summed)
+
         return v_vec / n
 
     def _branch1(self, x, d, k, nf, G_, n):
@@ -195,20 +195,8 @@ class ConvNet():
 
     def pre_process_mx(self,X, batch_size):
         d, k, nf = self.f[0].shape
-        precomputed_mx1, debug = self.make_mx_matrix_sparse(X, d, k, nf)
-        #mx_rows, mx_cols, _ = precomputed_mx1.shape
-
-        # TODO REMOVE ME: DEBUG ONLY
-        old_mx = self.make_mx_matrix(X, d, k, nf)
-        # change axis so that it's batch x dd x output, and sorted in that order
-        swapped = np.swapaxes(old_mx, 2,1)
-        swapped = np.swapaxes(swapped, 0,1)
-        old_where = np.argwhere(swapped > 0)
-
-        diff = debug - old_where
-
-        print('hello world')
-
+        precomputed_mx1 = self.make_mx_matrix(X, d, k, nf)
+        mx_rows, mx_cols, _ = precomputed_mx1.shape
 
         # swapped to: mx_cols(output dim) x mx_rows x data_size
         swapped = np.swapaxes(precomputed_mx1, 1, 0)
@@ -293,7 +281,18 @@ class ConvNet():
         unique, split_ix = np.unique(nonzeros[:,0],return_index=True)
         words = np.split(nonzeros[:,1], split_ix[1:]) # fixed a bug
 
-        for batch_ix, word in enumerate(words):
+        # used to pre-preprocess batch index, tiny speed up
+        batch_indices = unique % batch_size
+        batches = []
+        cols_idx = {}
+        for word_ix, word in enumerate(words):
+
+            batch_ix = batch_indices[word_ix]
+            if batch_ix == 0: # each batch
+                cols_idx = {}
+                batches.append(cols_idx)
+
+
             # create a list of x sub vectors for each word
             nlen = int(x_input.shape[0] / d)
             vec_x_cols = d * k
@@ -304,6 +303,7 @@ class ConvNet():
             # also assume strides are 1, but easy change (modify i) to accomondate different strides
             debug_row_in_mx = 0
             mx = []
+            mx_row_i = 0
             for i in range(x_rows):
                 if i >= word.size:
                     break # end of word
@@ -311,13 +311,19 @@ class ConvNet():
                 x_vec = word[i:end] - d * i # assume 1 stride (aka 1 character move)
 
                 # loop to an additional
-                for i in range(nf):
-                    offset = i * vec_x_cols
+                for j in range(nf):
+                    offset = j * vec_x_cols
                     mx_row = x_vec + offset
                     mx.append(mx_row)
 
-            # TODO optmize for cols out dim
-        return mx,
+                    for out_col in mx_row:
+                        if out_col not in cols_idx:
+                            cols_idx[out_col] = []
+                        gix = mx_row_i * batch_size + batch_ix  # g_row * batch_size + batch number
+                        cols_idx[out_col].append(gix)
+                    mx_row_i += 1
+
+        self.precomputed_mx1_full = batches
 
     def compute_num_grads_center(self, X, Y, h=1e-5):
         """

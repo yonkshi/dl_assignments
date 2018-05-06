@@ -13,7 +13,7 @@ X = None
 
 def main():
     np.random.seed(100)
-    names, labels = get_names(100)
+    names, labels = get_names()
     N = len(names)
     global X
     # X = np.zeros((N, N_LEN * D))
@@ -75,16 +75,16 @@ def sanitize(name):
     return name.lower().replace(',','')\
         .replace(' ','|')\
         .replace('\'','{') # replace ' to ascii 123
+
 def desanitize(name):
     return name.replace('|',' ').replace('{','\'')
 
 def hehe(strrr):
     return len(sanitize(strrr))
+
 def analyze_encode(names):
     longest = sorted(map(hehe, names))[-1]
     return 'he'
-
-
 
 
 
