@@ -73,8 +73,6 @@ class ConvNet():
         print('preprocess time', time() - t0)
         t0 = time()
         for start in np.arange(0, data_size, batchsize):
-
-            print(start)
             end = start + batchsize
             if end > data_size: end = data_size
 
@@ -175,9 +173,10 @@ class ConvNet():
             to_be_summed = G_.take(gix)
             v_vec[col_ix] = np.sum(to_be_summed)
         return v_vec / n
+
     def _branch1(self, x, d, k, nf, G_, n):
         #mx = self.make_mx_matrix(x, d, k, nf)
-        #v_vec_old = np.einsum('ik,ijk->j', G_, mx) / n
+        #v_vec = np.einsum('ik,ijk->j', G_, mx) / n
 
         # Optmized version
         mx = self.make_mx_matrix(x, d, k, nf, optimized=True)
@@ -186,13 +185,9 @@ class ConvNet():
 
         return v_vec
 
-
-    def optimize_G(self):
-
-        pass
     def pre_process_mx(self,X, batch_size):
         d, k, nf = self.f[0].shape
-        precomputed_mx1 = self.make_mx_matrix(X, d, k, nf)
+        precomputed_mx1 = self.make_mx_matrix_sparse(X, d, k, nf)
         mx_rows, mx_cols, _ = precomputed_mx1.shape
 
         # swapped to: mx_cols(output dim) x mx_rows x data_size
@@ -269,6 +264,11 @@ class ConvNet():
         return mx
 
     def make_mx_matrix_sparse(self, x_input, d, k, nf):
+
+        t0 = time()
+        print('benchmarking argwhere on x_input')
+        zz = np.argwhere(x_input.T > 0 )
+        print('done! time', time()-t0)
         x_input_ = x_input
         nlen = int(x_input_.shape[0] / d)
 
