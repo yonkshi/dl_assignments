@@ -23,7 +23,7 @@ k: width of filter, not related to
 '''
 
 class HyperParam:
-    def __init__(self, k=[5,3],nf=[20,20], K = 18, fsize=1337, batch_size = 100, learning_rate=0.1):
+    def __init__(self, k=[5,3],nf=[20,20], K = 18, fsize=1337, batch_size = 100, learning_rate=0.001, momentum_coeff = 0.9):
         self.k = k # filter width
         self.nf = nf # number of filters
         self.fsize = (N_LEN - k[-1] + 1) * nf[-1]
@@ -31,8 +31,10 @@ class HyperParam:
         self.sigs = [0.01, 0.01, 0.01] #TODO He initialization?
         self.batch_size = batch_size
         self.eps = 0.01
-        self.learning_rate = learning_rate
+        self.etta = learning_rate
+        self.rho = momentum_coeff
         self.precomputed_v1_dimension = D * k[0] * nf[0]
+
 
 
         # Speed comparison bottleneck
@@ -63,6 +65,10 @@ class ConvNet():
         self.dF1 = 0
         self.dW = 0
 
+        # mommentum
+        self.dW_momentum = 0
+        self.dF_momentum = [0] * filter_size
+
     def compute_batch(self, X, Y, W=None):
         batchsize = self.hp.batch_size
         data_size = X.shape[1]
@@ -81,13 +87,15 @@ class ConvNet():
             i = int(start / batchsize)
             self.pre_mx1_batch = self.precomputed_mx1[i]
 
-
             p = self.forward(x_batch)
-            dw, [df1, df2] = self.backward(y_batch, p)
+            dw, df = self.backward(y_batch, p)
 
-            self.w -= dw * self.hp.learning_rate
-            self.f[0] -= df1 * self.hp.learning_rate
-            self.f[1] -= df2 * self.hp.learning_rate
+            self.dW_momentum = self.dW_momentum * self.hp.rho + dw * self.hp.etta
+            self.dF_momentum = [ f * self.hp.rho + df[i] for i,f in enumerate(self.dF_momentum)]
+
+            self.w -= self.dW_momentum
+            self.f = [ f - self.dF_momentum[i] for i, f in enumerate(self.f)]
+
 
         print('epoch time:', time()-t0)
         print(self.compute_loss(X, Y))
@@ -187,8 +195,20 @@ class ConvNet():
 
     def pre_process_mx(self,X, batch_size):
         d, k, nf = self.f[0].shape
-        precomputed_mx1 = self.make_mx_matrix_sparse(X, d, k, nf)
-        mx_rows, mx_cols, _ = precomputed_mx1.shape
+        precomputed_mx1, debug = self.make_mx_matrix_sparse(X, d, k, nf)
+        #mx_rows, mx_cols, _ = precomputed_mx1.shape
+
+        # TODO REMOVE ME: DEBUG ONLY
+        old_mx = self.make_mx_matrix(X, d, k, nf)
+        # change axis so that it's batch x dd x output, and sorted in that order
+        swapped = np.swapaxes(old_mx, 2,1)
+        swapped = np.swapaxes(swapped, 0,1)
+        old_where = np.argwhere(swapped > 0)
+
+        diff = debug - old_where
+
+        print('hello world')
+
 
         # swapped to: mx_cols(output dim) x mx_rows x data_size
         swapped = np.swapaxes(precomputed_mx1, 1, 0)
@@ -263,39 +283,41 @@ class ConvNet():
 
         return mx
 
-    def make_mx_matrix_sparse(self, x_input, d, k, nf):
+    def preprocess_mx_superefficient(self, x_input, batch_size):
 
-        t0 = time()
-        print('benchmarking argwhere on x_input')
-        zz = np.argwhere(x_input.T > 0 )
-        print('done! time', time()-t0)
-        x_input_ = x_input
-        nlen = int(x_input_.shape[0] / d)
+        d, k, nf = self.f[0].shape
 
-        vec_x_cols = d * k
-        x_rows = (nlen - k + 1)
-        rows = x_rows * nf
-        cols = vec_x_cols * nf
+        nonzeros = np.argwhere(x_input.T > 0 )
 
-        batch_size = x_input.shape[1]
+        # split up into single word, assuming each
+        unique, split_ix = np.unique(nonzeros[:,0],return_index=True)
+        words = np.split(nonzeros[:,1], split_ix[1:]) # fixed a bug
 
-        x_vecs = np.ndarray((x_rows, vec_x_cols, batch_size))
+        for batch_ix, word in enumerate(words):
+            # create a list of x sub vectors for each word
+            nlen = int(x_input.shape[0] / d)
+            vec_x_cols = d * k
+            x_rows = (nlen - k + 1)
 
-        # stride x to list
-        for i in range(x_rows):
-            idx = i * d
-            x_vecs[i, :] = x_input_[idx:idx + vec_x_cols]
+            # Stride x to list
+            # Words have consecutive character with nlen each, terminate at the last character,
+            # also assume strides are 1, but easy change (modify i) to accomondate different strides
+            debug_row_in_mx = 0
+            mx = []
+            for i in range(x_rows):
+                if i >= word.size:
+                    break # end of word
+                end = i + k if i + k < word.size else word.size
+                x_vec = word[i:end] - d * i # assume 1 stride (aka 1 character move)
 
-        mx = np.zeros((rows, cols, batch_size))
+                # loop to an additional
+                for i in range(nf):
+                    offset = i * vec_x_cols
+                    mx_row = x_vec + offset
+                    mx.append(mx_row)
 
-        # add in into large matrix
-        for i in range(rows):
-            idx = (i % nf) * vec_x_cols
-            r = int(i / nf)
-            deleme = x_vecs[r, :]
-            mx[i, idx:idx + vec_x_cols] = deleme
-
-        return mx
+            # TODO optmize for cols out dim
+        return mx,
 
     def compute_num_grads_center(self, X, Y, h=1e-5):
         """
