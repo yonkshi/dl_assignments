@@ -12,7 +12,7 @@ X = None
 
 
 def main():
-    np.random.seed(100)
+    np.random.seed(150)
     names, labels = get_names()
     N = len(names)
     global X

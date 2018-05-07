@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.sparse import csr_matrix
 from numpy import tensordot, maximum, sum
-from numpy.random import randn
+from numpy.random import normal
 from time import time
 from typing import List
 from scipy.io import loadmat
@@ -23,19 +23,25 @@ k: width of filter, not related to
 '''
 
 class HyperParam:
-    def __init__(self, k=[5,3],nf=[20,20], K = 18, fsize=1337, batch_size = 100, learning_rate=0.001, momentum_coeff = 0.9):
+    def __init__(self, k=[3,4],nf=[5,6], K = 18, fsize=1337, batch_size = 100, learning_rate=0.001, momentum_coeff = 0.9):
         self.k = k # filter width
         self.nf = nf # number of filters
         self.fsize = (N_LEN - k[-1] + 1) * nf[-1]
         self.K = K # output dimensions
-        self.sigs = [0.01, 0.01, 0.01] #TODO He initialization?
         self.batch_size = batch_size
         self.eps = 0.01
         self.etta = learning_rate
         self.rho = momentum_coeff
         self.precomputed_v1_dimension = D * k[0] * nf[0]
 
+        # compute nlen
+        self.nlen = [N_LEN]
+        for i in range(len(nf)): self.nlen += [self.nlen[-1] - k[i] + 1]
 
+        # He initialization
+        # Input layer, hidden conv layer, and dense layer
+        sig = np.array([k[0], self.nf[0] * k[1], self.nlen[-1] * nf[-1]])
+        self.sigma = np.sqrt(2/sig)
 
         # Speed comparison bottleneck
 
@@ -51,14 +57,13 @@ class ConvNet():
         d = D
         for i, ki in enumerate(self.hp.k):
             ni = self.hp.nf[i]
-            sig = self.hp.sigs[i]
-            self.f[i] = randn(d, ki, ni) * sig
-            self.nlen.append(self.nlen[i] - ki + 1)
-
+            #self.f[i] = normal(0, self.hp.sigma[i], (d, ki, ni))
+            self.f[i] = np.random.randn(d, ki, ni) * 0.01
             d = ni
-        fsize = self.hp.nf[-1] * self.nlen[-1]
-        self.w = randn(self.hp.K, fsize) * self.hp.sigs[-1]
 
+        fsize = self.hp.nf[-1] * self.hp.nlen[-1]
+        #self.w = normal(0, self.hp.sigma[-1],(self.hp.K, fsize))
+        self.w = np.random.randn(self.hp.K, fsize) * 0.01
         self.mf=[]
         self.dF = [0] * filter_size
         self.dF2 = 0
@@ -79,6 +84,7 @@ class ConvNet():
         print('preprocess time', time() - t0)
         t0 = time()
         for start in np.arange(0, data_size, batchsize):
+            self.mf = []
             end = start + batchsize
             if end > data_size: end = data_size
 
@@ -89,6 +95,26 @@ class ConvNet():
 
             p = self.forward(x_batch)
             dw, df = self.backward(y_batch, p)
+            # print('begin numerical grad')
+            # ndw, ndf1, ndf2 = self.compute_num_grads_center(x_batch, y_batch)
+            #
+            # df1, df2 = df
+            # diffw = dw-ndw
+            # diff1 = ndf1 - df1
+            # diff2 = ndf2 - df2
+            # diff1_max = np.max(np.abs(diff1))
+            # snd2 = np.abs(ndf1).sum()
+            # sd2 = np.abs(df1).sum()
+            #
+            # print('d1  ',sd2)
+            # print('nd1 ', snd2)
+            # print('diff', snd2 - sd2)
+            # print(diff1.sum())
+            # z = df2
+            # zz =  ndf2
+            # print('done numerical grad')
+            # df = [ndf1, ndf2]
+
 
             self.dW_momentum = self.dW_momentum * self.hp.rho + dw * self.hp.etta
             self.dF_momentum = [ f * self.hp.rho + df[i] for i,f in enumerate(self.dF_momentum)]
@@ -96,6 +122,7 @@ class ConvNet():
             self.w -= self.dW_momentum
             self.f = [ f - self.dF_momentum[i] for i, f in enumerate(self.f)]
 
+            print('loss',self.compute_loss(X, Y))
 
         print('epoch time:', time()-t0)
         print(self.compute_loss(X, Y))
@@ -155,14 +182,11 @@ class ConvNet():
             if i == 0:
                 #mx = self.pre_mx1_batch
                 v_vec = self._branch0(G_, n)
-                v_vec2 = self._branch1(x, d, k, nf, G_, n)
+                #v_vec2 = self._branch1(x, d, k, nf, G_, n)
             else:
-
-                #mx = self.make_mx_matrix(x, d, k, nf)
                 v_vec = self._branch1(x,d,k,nf, G_, n)
-            #v_vec = np.einsum('ik,ijk->j', G_, mx) / n
 
-            v = v_vec.reshape(f.shape)
+            v = v_vec.reshape(f.shape, order='F')
             # bug fix
             if i == 0:
                 v = v_vec.reshape(f.shape, order='F')
@@ -183,15 +207,43 @@ class ConvNet():
         return v_vec / n
 
     def _branch1(self, x, d, k, nf, G_, n):
-        #mx = self.make_mx_matrix(x, d, k, nf)
-        #v_vec = np.einsum('ik,ijk->j', G_, mx) / n
+        mx = self.make_mx_matrix(x, d, k, nf)
+        # v_vec = np.einsum('ik,ijk->j', G_, mx) / n
+        #
+        # try slow
+        s_vec = np.zeros(mx.shape[1])
+        for i in range(G_.shape[1]):
+            g = G_[:,i]
+            #g1 = g.reshape(mx.shape[0], nf)
+            m1 = mx[:,:,i]
+            g2 = g.dot(m1)
+            s_vec += g2
+        #s_vec /= n
 
         # Optmized version
         mx = self.make_mx_matrix(x, d, k, nf, optimized=True)
-        new_g = G_.reshape(nf,mx.shape[0],-1, order='F') # nf should actually be cols, but einsum eliminates the need
-        v_vec = np.einsum('ijk,lik->jl', mx, new_g).flatten() / n
+        new_g = G_.reshape(mx.shape[0],nf,-1) # nf should actually be cols, but einsum eliminates the need
+        v_vec = np.einsum('ijk,iyk->jy', mx, new_g)#.flatten('F')  / n # Normalize
 
-        return v_vec
+        #
+        # #slow way
+        # s_vec = np.zeros((mx.shape[1], nf))
+        # for i in range(G_.shape[1]):
+        #     g = G_[:,i]
+        #     g1 = g.reshape(mx.shape[0], nf)
+        #     m1 = mx[:,:,i]
+        #     g2 = m1.T.dot(g1)
+        #     s_vec += g2
+        # s_vec /= n
+        #
+        # s = np.sum(s_vec) - np.sum(v_vec)
+        # d = s_vec - v_vec
+
+        f = self.f[1]
+        v_vec = v_vec.reshape(f.shape, order='F')
+        s_vec = s_vec.reshape(f.shape, order='F')
+        diff = v_vec - s_vec
+        return s_vec
 
     def pre_process_mx(self,X, batch_size):
         d, k, nf = self.f[0].shape
@@ -238,10 +290,7 @@ class ConvNet():
         return mf
 
     def make_mx_matrix(self, x_input, d, k, nf, optimized=False):
-        x_input_ = x_input
-        nlen = int(x_input_.shape[0] / d)
-
-        non_zeros_per_mx_row = self.hp.k[0]
+        nlen = int(x_input.shape[0] / d)
 
         vec_x_cols = d * k
         x_rows = (nlen - k + 1)
@@ -255,7 +304,7 @@ class ConvNet():
         # stride x to list
         for i in range(x_rows):
             idx = i * d
-            x_vecs[i, :] = x_input_[idx:idx + vec_x_cols]
+            x_vecs[i, :] = x_input[idx:idx + vec_x_cols]
 
         if optimized:
             return x_vecs
@@ -354,8 +403,6 @@ class ConvNet():
                 grad[ix] = (plus_cost - minus_cost) / (2 * h)
                 it.iternext()  # go to next index
 
-            if i > 0 and param.shape[0] == param.shape[2]:
-                grad = grad.transpose(2, 1, 0)  # to make sure the 3D arrays come the same way as in backward function
             num_grads.append(grad)
 
         return num_grads

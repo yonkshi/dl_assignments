@@ -23,9 +23,9 @@ s = mf.dot(x_input)
 diff = vecS - s
 diff_mean = diff.mean()
 
-s2 = mx.dot(vecF)
+s2 = mx[:,:,0].dot(vecF)
 diff2 = vecS - s2
-diff2_mean = diff2.mean()
+diff2_mean = diff2.sum()
 print('hello')
 
 ff = np.arange(1, 40+1).reshape(5,4,2, order='F')
