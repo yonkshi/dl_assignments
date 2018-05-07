@@ -13,17 +13,17 @@ X = None
 
 def main():
     np.random.seed(150)
-    names, labels = get_names()
+    names, labels, val_idx = get_names()
     N = len(names)
     global X
     # X = np.zeros((N, N_LEN * D))
     # for i, name in enumerate(names):
     #     X[i,...] = encode(name)
-    #
+
     x_batch = np.vstack(map(encode,names)).T
     y_batch = label_encode(labels)
     c = ConvNet()
-    c.compute_batch(x_batch, y_batch)
+    c.compute_batch(x_batch, y_batch, val_idx)
 
 
 def get_names(max=10000000):
@@ -44,7 +44,17 @@ def get_names(max=10000000):
         nums.append(int(num)-1) # 0 index
         if i >= max-1:
             break
-    return names, nums
+
+
+    with open('valset_idx.txt') as f:
+        content = f.readlines()
+    for i, line in enumerate(content):
+        numstr = line.split(' ')
+    numstr.pop() # remove trailing empty string
+    nparr = np.array(numstr)
+    val_idx = nparr.astype(np.int)
+
+    return names, nums, val_idx
 
 def label_encode(l):
     rows = len(l)

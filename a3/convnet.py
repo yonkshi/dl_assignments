@@ -10,6 +10,10 @@ D = 28 # Number of chars
 N_LEN = 19 # Maximum char for longest word
 
 X = None
+UPDATE_STEPS = 5000
+BATCH_SAMPLE_SIZE = 73 # hard coded smallest class in training set
+VALIDATION_SAMPLE_SIZE = 500
+
 '''
 d: dimension of char space (28 types of chars)
 nlen: dimension of char (max number of char per word)
@@ -22,7 +26,7 @@ k: width of filter, not related to
 '''
 
 class HyperParam:
-    def __init__(self, k=[3,4],nf=[5,6], K = 18, fsize=1337, batch_size = 100, learning_rate=0.001, momentum_coeff = 0.9):
+    def __init__(self, k=[5,3],nf=[20,20], K = 18, fsize=1337, batch_size = 100, learning_rate=0.001, momentum_coeff = 0.9):
         self.k = k # filter width
         self.nf = nf # number of filters
         self.fsize = (N_LEN - k[-1] + 1) * nf[-1]
@@ -73,24 +77,39 @@ class ConvNet():
         self.dW_momentum = 0
         self.dF_momentum = [0] * filter_size
 
-    def compute_batch(self, X, Y, W=None):
+    def compute_batch(self, X, Y, validation_idx, W=None):
+        # preparing data
+        x_val_full = X[:, validation_idx]
+        y_val_full = Y[:, validation_idx]
+        x_train = np.delete(X, validation_idx, axis=1) # split validation_set for
+        y_train = np.delete(Y, validation_idx, axis=1)
+
         batchsize = self.hp.batch_size
-        data_size = X.shape[1]
+        training_size = X.shape[1]
         t0 = time()
         print('begin preprocessing ...')
-        self.preprocess_mx_superefficient(X, batchsize)
+        #self.preprocess_mx_superefficient(X, batchsize)
+        self.preprocess_mx_fast(X)
         print('preprocess time', time() - t0)
         t0 = time()
-        for start in np.arange(0, data_size, batchsize):
+        loss = []
+        accuracy = []
+        validation_loss = []
+        validation_accuracy = []
+        for z in range(UPDATE_STEPS):
             self.mf = []
-            end = start + batchsize
-            if end > data_size: end = data_size
+            samples = np.random.randint(0, training_size, BATCH_SAMPLE_SIZE)
+            x_batch = X[:, samples]
+            y_batch = Y[:, samples]
 
-            x_batch = X[:, start:end]
-            y_batch = Y[:, start:end]
-            i = int(start / batchsize)
-            self.mx1_batch = self.precomputed_mx1_full[i]
+            # Training sampling:
+            train_samples = np.random.randint(0, training_size, VALIDATION_SAMPLE_SIZE)
+            x_val = X[:, train_samples]
+            y_val = Y[:, train_samples]
 
+            #i = int(start / batchsize)
+            #self.mx1_batch = self.preprocess_mx_superefficient(x_batch, x_batch.shape[1]) #self.precomputed_mx1_full[i]
+            self.mx1_batch = self.sparse_mx1_to_col(samples)
             p = self.forward(x_batch)
             dw, df = self.backward(y_batch, p)
 
@@ -100,10 +119,25 @@ class ConvNet():
             self.w -= self.dW_momentum
             self.f = [ f - self.dF_momentum[i] for i, f in enumerate(self.f)]
 
-            #print('loss',self.compute_loss(X, Y))
+            # Benchmark and reporting stuff
+            loss += [self.loss(x_batch, y_batch, p=p)]
+            accuracy += [self.accuracy(x_batch, y_batch, p=p)]
 
-            print('loss',self.loss(x_batch, y_batch, p=p))
-            print('accuracy', '%0.2f%%' % self.accuracy(x_batch, y_batch, p=p))
+            validation_loss += [self.loss(x_val, y_val)]
+            validation_accuracy += [self.accuracy(x_val, y_val)]
+
+            if z % 100 == 0 and z > 0:
+                print('=== %d / %d Complete ===' % (z, UPDATE_STEPS) )
+                print('time:', '%0.2f' % (time()-t0))
+                print('loss:', self.loss(x_batch, y_batch, p=p))
+                print('accu:', self.accuracy(x_batch, y_batch, p=p))
+                print('validation loss:', self.loss(x_val_full, y_val_full))
+                print('validation accu:', self.accuracy(x_val_full, y_val_full))
+                t0 = time()
+
+        # plotting
+        self._plot_loss(loss, validation_loss)
+        self._plot_accuracy(accuracy, validation_accuracy)
 
     def forward(self, x_input, params=None):
         if params is not None:
@@ -229,7 +263,74 @@ class ConvNet():
                         cols_idx[out_col].append(gix)
                     mx_row_i += 1
 
-        self.precomputed_mx1_full = batches
+        #self.precomputed_mx1_full = batches
+
+        return cols_idx
+
+    def preprocess_mx_fast(self, x_input):
+        d, k, nf = self.f[0].shape
+
+        nonzeros = np.argwhere(x_input.T > 0)
+        # split up into words, one per
+        unique, split_ix = np.unique(nonzeros[:,0],return_index=True)
+        words = np.split(nonzeros[:,1], split_ix[1:]) # fixed a bug
+
+        # used to pre-preprocess batch index, tiny speed up
+
+        preprocessed = []
+        mx_row_lengths = []
+        mx_col_lengths = []
+        for word_ix, word in enumerate(words):
+
+            # create a list of x sub vectors for each word
+            nlen = int(x_input.shape[0] / d)
+            vec_x_cols = d * k
+            x_rows = (nlen - k + 1)
+
+            # Stride x to list
+            # Words have consecutive character with nlen each, terminate at the last character,
+            # also assume strides are 1, but easy change (modify i) to accomondate different strides
+            mx = []
+            for i in range(x_rows):
+                if i >= word.size:
+                    break  # end of word
+                end = i + k if i + k < word.size else word.size
+                x_vec = word[i:end] - d * i  # assume 1 stride (aka 1 character move)
+
+                # n filters duplicate
+                for j in range(nf):
+                    offset = j * vec_x_cols
+                    mx_row = x_vec + offset
+                    mx.append(mx_row)
+
+            preprocessed.append(mx)
+        self.precomputed_mx1_full = np.array(preprocessed, dtype='object')
+
+    def sparse_mx1_to_col(self, indices):
+        '''
+        Uses preprocessed mx1 and convert into mx1 dot output indices, so that
+        :param indices:
+        :return:
+        '''
+
+        batch_size = len(indices)
+
+        # contain output column indices
+        cols_idx = {}
+
+        # loop through batch
+        for batch_i, full_i in enumerate(indices):
+            mx_mat = self.precomputed_mx1_full[full_i]
+            # loop through row of each mx mat
+            for r, row in enumerate(mx_mat):
+                cols = mx_mat[r]
+                # loop through columns of mx mat
+                for col in cols:
+                    if col not in cols_idx:
+                        cols_idx[col] = []
+                    gix = r * batch_size + batch_i  # g_row * batch_size + batch number
+                    cols_idx[col].append(gix)
+        return cols_idx
 
     def make_mf_matrix(self, F, nlen):
         dd, k, nf = F.shape
@@ -352,16 +453,20 @@ class ConvNet():
 
     def _plot_loss(self, loss, validation_loss=None):
         plt.figure()
-        plt.plot(loss)
+        plt.plot(loss, label='training')
+        plt.plot(validation_loss, label='validation')
         plt.title('training loss')
         plt.xlabel('update cycle')
+        plt.legend()
         plt.show()
 
     def _plot_accuracy(self, accuracy, validation_accuracy=None):
         plt.figure()
-        plt.plot(accuracy)
+        plt.plot(accuracy, label='training')
+        plt.plot(validation_accuracy, label='validation')
         plt.title('prediction accuracy')
         plt.xlabel('update cycle')
+        plt.legend()
         plt.show()
 
 
