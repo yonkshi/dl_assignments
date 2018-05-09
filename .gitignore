@@ -1,6 +1,7 @@
 .idea/
 a1/data/
 a1/Datasets/
+a2/Datasets/
 a1/Result_Pics/
 *__pycache__/
 *.pyc
