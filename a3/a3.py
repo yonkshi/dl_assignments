@@ -1,6 +1,9 @@
 from scipy.io import loadmat, whosmat
 import numpy as np
 from convnet import *
+import matplotlib.pyplot as plt
+
+
 
 NAMES = 'ascii_names.txt'
 D = 28 #Input dim
@@ -12,7 +15,7 @@ X = None
 
 
 def main():
-    np.random.seed(150)
+    np.random.seed(1501)
     names, labels, val_idx = get_names()
     N = len(names)
     global X
@@ -20,11 +23,26 @@ def main():
     # for i, name in enumerate(names):
     #     X[i,...] = encode(name)
 
+    _, unique_idx = np.unique(labels, return_index=True)
+
     x_batch = np.vstack(map(encode,names)).T
     y_batch = label_encode(labels)
     c = ConvNet()
-    c.compute_batch(x_batch, y_batch, val_idx)
+    c.load()
+    #predict('barrera', c)
+    c.compute_batch(x_batch, y_batch, val_idx, labels)
 
+def predict(name, convnet):
+    with open('category_labels.txt') as f:
+        content = f.readlines()
+
+    languages = []
+    for line in content:
+        languages.append( line.split(' ')[1].rstrip() )
+    encoded_name = encode(name)
+    p = convnet.forward(encoded_name, )
+    for i, lang in enumerate(languages):
+        print(lang, '%0.2f%%' % (p[i] * 100))
 
 def get_names(max=10000000):
     """
@@ -75,8 +93,8 @@ def encode(name):
 
 def decode(encoded):
     encoded = encoded.reshape((N_LEN,D))
-    array = np.argmax(encoded, axis=1) + 97
-    w_len = np.argmin(np.sum(encoded, axis=1)) # word length
+    array = np.argmax(encoded, axis=-1) + 97
+    w_len = np.argmin(np.sum(encoded, axis=-1)) # word length
     array = array[:w_len]
     name = ''.join(map(chr,array)) #converts ascii to string
     return desanitize(name)

@@ -3,6 +3,7 @@ from numpy import sum
 from numpy.random import normal
 import matplotlib.pyplot as plt
 from time import time
+from confusion import *
 
 
 NAMES = 'ascii_names.txt'
@@ -11,8 +12,9 @@ N_LEN = 19 # Maximum char for longest word
 
 X = None
 UPDATE_STEPS = 20000
-BATCH_SAMPLE_SIZE = 73 # hard coded smallest class in training set
-VALIDATION_SAMPLE_SIZE = 500
+BATCH_SAMPLE_SIZE = 150 # batch size
+BALANCED_DATA = True
+CHECK_GRAD = True
 
 '''
 d: dimension of char space (28 types of chars)
@@ -26,13 +28,12 @@ k: width of filter, not related to
 '''
 
 class HyperParam:
-    def __init__(self, k=[10,8,3],nf=[20,20,20], K = 18, batch_size = 100, learning_rate=0.001, momentum_coeff=0.9, momentum_decay=0.999):
+    def __init__(self, k=[5, 3],nf=[20, 20], K = 18, learning_rate=1e-6, momentum_coeff=0.9, momentum_decay=1):
         self.k = k # filter width
         self.nf = nf # number of filters
         self.fsize = (N_LEN - k[-1] + 1) * nf[-1]
         self.K = K # output dimensions
-        self.batch_size = batch_size
-        self.eps = 0.01
+
         self.etta = learning_rate
         self.rho = momentum_coeff
         self.precomputed_v1_dimension = D * k[0] * nf[0]
@@ -46,10 +47,18 @@ class HyperParam:
 
         # He initialization
         # Input layer, hidden conv layer, and dense layer
-        sig = np.array([k[0], self.nf[0] * k[1], self.nlen[-1] * nf[-1]])
+        sigma = [k[0]] # input sparse layer
+        sigma += [ k * n for k, n in zip(k[1:],nf[:-1])]
+        sigma += [self.nlen[-1] * nf[-1]]
+        sig = np.array(sigma)
         self.sigma = np.sqrt(2/sig)
 
         # Speed comparison bottleneck
+
+    def __str__(self):
+        k = ' '.join(map(str,self.k))
+        nf = ' '.join(map(str,self.nf))
+        return 'layers: {}, k: {}, nf: {}, etta: {}, rho: {}, rho decay: {}, balanced: {}'.format(self.hidden_layers+1, k, nf, self.etta, self.rho, self.rho_decay, BALANCED_DATA)
 
 class ConvNet():
     def __init__(self, hyperparam=HyperParam(), ):
@@ -59,19 +68,20 @@ class ConvNet():
         self.nlen = [N_LEN]
         # initialize filters
         d = D
-        self.input_f = np.random.randn(d, self.hp.k[0], self.hp.nf[0]) * 0.1
+        self.input_f = normal(0, self.hp.sigma[0], (d, self.hp.k[0], self.hp.nf[0]))
+        #self.input_f = np.random.randn(d, self.hp.k[0], self.hp.nf[0]) * 0.1
         d = self.hp.nf[0]
         for i, ki in enumerate(self.hp.k):
             if i == 0: # skip input layer
                 continue
             ni = self.hp.nf[i]
-            #self.hidden_f[i-1] = normal(0, self.hp.sigma[i], (d, ki, ni))
-            self.hidden_f[i-1] = np.random.randn(d, ki, ni) * 0.1
+            self.hidden_f[i-1] = normal(0, self.hp.sigma[i], (d, ki, ni))
+            #self.hidden_f[i-1] = np.random.randn(d, ki, ni) * 0.1
             d = ni
 
         fsize = self.hp.nf[-1] * self.hp.nlen[-1]
-        #self.w = normal(0, self.hp.sigma[-1],(self.hp.K, fsize))
-        self.w = np.random.randn(self.hp.K, fsize) * 0.1
+        self.w = normal(0, self.hp.sigma[-1],(self.hp.K, fsize))
+        #self.w = np.random.randn(self.hp.K, fsize) * 0.1
         self.mf=[]
         self.dF2 = 0
         self.dF1 = 0
@@ -81,18 +91,25 @@ class ConvNet():
         self.dW_momentum = 0
         self.dF_momentum = [0] * self.hp.hidden_layers
         self.input_dF_momentum = 0
+        print(self.hp)
 
-    def compute_batch(self, X, Y, validation_idx, W=None):
+    def compute_batch(self, X, Y, validation_idx, labels,  W=None):
         # preparing data
         x_val_full = X[:, validation_idx]
         y_val_full = Y[:, validation_idx]
         x_train = np.delete(X, validation_idx, axis=1) # split validation_set for
         y_train = np.delete(Y, validation_idx, axis=1)
 
-        # balance factor:
-        balanced_batch_size = np.min(y_train.sum(axis=1)).astype('int')
+        # cutting up classes:
+        y_sum = y_train.sum(axis=1).astype('int')
+        balanced_batch_size = (np.min(y_sum)/17).astype('int')
+        start = 0
+        classes = []
+        for l in y_sum:
+            end = start + l
+            classes.append((start, end))
+            start = end
 
-        batchsize = self.hp.batch_size
         training_size = x_train.shape[1]
         t0 = time()
         print('begin preprocessing ...')
@@ -104,11 +121,25 @@ class ConvNet():
         accuracy = []
         validation_loss = []
         validation_accuracy = []
+        z = 20000
         for z in range(UPDATE_STEPS):
             self.mf = []
-            samples = np.random.randint(0, training_size, balanced_batch_size)
-            x_batch = x_train[:, samples]
-            y_batch = y_train[:, samples]
+            if BALANCED_DATA:
+                samples = np.array([]).astype('int')
+                for a, b in classes:
+                    idxs = np.random.randint(a, b, balanced_batch_size)
+                    samples = np.concatenate((samples, idxs))
+                samples.astype('int')
+                x_batch = x_train[:, samples]
+                y_batch = y_train[:, samples]
+
+            else:
+                samples = np.random.randint(0, training_size, BATCH_SAMPLE_SIZE)
+                x_batch = x_train[:, samples]
+                y_batch = y_train[:, samples]
+
+
+
 
             # Training sampling:
             # train_samples = np.random.randint(0, training_size, VALIDATION_SAMPLE_SIZE)
@@ -120,6 +151,14 @@ class ConvNet():
             self.mx1_batch = self.sparse_mx1_to_col(samples)
             p = self.forward(x_batch)
             dw, hidden_df, input_df = self.backward(y_batch, p)
+
+            if CHECK_GRAD:
+                ndw, nidf, nhdf = self.compute_num_grads_center(x_batch, y_batch)
+
+                diff_w = np.sum(np.abs(dw) - np.abs(ndw))
+                diff_input_df = np.sum(np.abs(input_df) - np.abs(nidf))
+                diff_hidden_df = np.sum(np.abs(hidden_df) - np.abs(nhdf))
+                print('hello world')
 
             self.dW_momentum = self.dW_momentum * self.hp.rho + dw * self.hp.etta
             self.dF_momentum = [ f * self.hp.rho + hidden_df[i] for i,f in enumerate(self.dF_momentum)]
@@ -149,17 +188,31 @@ class ConvNet():
 
                 t0 = time()
 
+            if (z+1) % 5000 == 0 and z > 0:
+                validation_p = self.forward(x_val_full)
+                cm = get_confusion_matrix(validation_p, y_val_full)
+                target_names = np.loadtxt('category_labels.txt', dtype=str)[:,1]
+                plot_confusion_matrix(cm, target_names, title='Validation, step=%d' % z)
         # plotting
+
+        validation_p = self.forward(x_val_full)
+        cm = get_confusion_matrix(validation_p, y_val_full)
+        target_names = np.loadtxt('category_labels.txt', dtype=str)[:,1]
+        plot_confusion_matrix(cm, target_names, title='Balanced confusion matrix, step=%d' % z)
+
+        #np.save('val_unbalanced', validation_accuracy)
+        #np.save('train_unbalanced', accuracy)
+        self.save()
         self._plot_loss(loss, validation_loss)
         self._plot_accuracy(accuracy, validation_accuracy)
 
     def forward(self, x_input, params=None):
         if params is not None:
-            weights, f1, f2 = params
-            filters = [f1, f2]
+            weights, input_f, f2 = params
+            filters = [f2]
             modify_self = False
         else:
-            weights, filters = self.w, self.hidden_f
+            weights, input_f, filters = self.w, self.input_f, self.hidden_f
             modify_self = True #
 
         X = [x_input]
@@ -167,10 +220,10 @@ class ConvNet():
 
         # input layer
         x = X[-1]
-        mf = self.make_mf_matrix(self.input_f, n_len)
+        mf = self.make_mf_matrix(input_f, n_len)
         s1 = mf.dot(x)
         s2 = np.maximum(s1, 0)
-        n_len = int(mf.shape[0] / self.input_f.shape[2])  # (n_len-k+1) * nf / nf
+        n_len = int(mf.shape[0] / input_f.shape[2])  # (n_len-k+1) * nf / nf
         X.append(s2)
         if modify_self: self.mf.append(mf)
 
@@ -409,7 +462,7 @@ class ConvNet():
         """
         # df/dx ≈ (f(x + h) - f(x - h))/2h according to the central difference formula
 
-        params = [np.copy(self.w), np.copy(self.hidden_f[0]), np.copy(self.hidden_f[1])]
+        params = [np.copy(self.w), np.copy(self.input_f), np.copy(self.hidden_f[0])]
         num_grads = []
 
         for i, param in enumerate(params):
@@ -420,9 +473,9 @@ class ConvNet():
                 ix = it.multi_index
                 old_value = param[ix]
                 param[ix] = old_value + h
-                plus_cost = self.loss(X, Y, params)
+                plus_cost = self.loss(X, Y, None, params)
                 param[ix] = old_value - h
-                minus_cost = self.loss(X, Y, params)
+                minus_cost = self.loss(X, Y, None, params)
                 param[ix] = old_value  # Restore original value
 
                 grad[ix] = (plus_cost - minus_cost) / (2 * h)
@@ -490,5 +543,30 @@ class ConvNet():
         plt.xlabel('update cycle')
         plt.legend()
         plt.show()
+
+    def save(self):
+        filename = 'h%d_'% (len(self.hp.k),)
+        filename += ''.join(['%sd%d_' % (k, self.hp.nf[i])for i,k in enumerate(self.hp.k)])
+
+        with open('saved_states/%s_params.txt'%filename, 'w+') as file:
+            params = str(self.hp)
+            file.write(params)
+
+        np.save('saved_states/' + filename + 'w', self.w)
+        np.save('saved_states/' + filename + 'input_f', self.input_f)
+        for i, hidden_f in enumerate(self.hidden_f):
+            np.save('saved_states/' + filename + 'hidden_f' + str(i), hidden_f)
+        print('saved')
+
+    def load(self):
+        '''
+        Hardcoded load function, to save some time
+        :return:
+        '''
+        self.input_f = np.load('saved_states/h2_5d20_3d20_input_f.npy')
+        self.w = np.load('saved_states/h2_5d20_3d20_w.npy')
+        self.hidden_f = [np.load('saved_states/h2_5d20_3d20_hidden_f0.npy')]
+
+
 
 
